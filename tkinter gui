@@ -1,0 +1,279 @@
+#import required libraries
+import pyfirmata, threading, time
+from pyfirmata.util import Iterator
+import tkinter as tk
+from tkinter import *
+from tkinter import ttk
+from pygame import mixer
+
+
+mixer.init() #initiates sound
+
+connected = False #connection state of the arduino
+port = "COM4" #port used to speak to the bluetooth module
+sound = mixer.Sound("Assets/error.mp3") #error soundfile
+
+#connects the arduino to the program
+def boardcon(port):
+    board = pyfirmata.ArduinoMega(port)
+    return board
+
+#used to deal with requests to connect
+def connect():
+    global board, onled, controlvar, m1p1, m1p2, m2p1, m2p2, irsl, irsr, connected, quote, trig, echo, pingout, pingin, iterator, irfr
+    
+    if controlvar.get() == 1:
+        try: 
+            text.config(state = NORMAL) #allows text to be written to status box
+            text.insert(tk.END, ("Connecting...\n"))
+            connectcheck.config(state = DISABLED) #disables the connect button so multiple requests cant be sent over each other
+            text.config(state = DISABLED) #disables status box
+            board = boardcon(port) #runs boardcon()
+            onled = board.digital[13] #assigns pin numbers to variables 
+            m1p1 = board.digital[2]
+            m1p2 = board.digital[3]
+            m2p1 = board.digital[5]
+            m2p2 = board.digital[4]
+            irsl = board.digital[8]
+            irsr = board.digital[9]
+            irfr = board.digital[44]
+            trig = board.digital[6]
+            echo = board.digital[7]
+            pingout = board.digital[22]
+            pingin = board.digital[28]
+            irsl.mode = pyfirmata.INPUT #defines these pins as input, so the board can read from them rather than write. 
+            irsr.mode = pyfirmata.INPUT #By default set to write
+            irfr.mode = pyfirmata.INPUT
+            pingin.mode = pyfirmata.INPUT
+            iterate() #creates a thread to update pin status
+            onled.write(1) #lights LED to show connection status 
+            text.config(state = NORMAL)
+            text.insert(tk.END, ("Connection Successful\n"))
+            connectcheck.config(state = NORMAL)
+            text.config(state = DISABLED)
+            connected = True
+            buttoncontrol() #sets the control buttons so that they can be interacted with
+            
+        #produces an error status if the connection times out. 
+        #prevents the error being written to the terminal
+        except OSError:
+            sound.play()
+            text.config(state = NORMAL)
+            text.insert(tk.END, "Error: Timeout\n")
+            text.config(state = DISABLED)
+            connectcheck.config(state=NORMAL)
+            connectcheck.deselect()
+            
+    else:
+        disconnect()
+        
+
+#runs a sequence if the board disconnects. 
+def disconnect():
+    global connected
+    onled.write(0)
+    board.exit() #cleanly exits from the board
+    text.config(state = NORMAL)
+    text.insert(tk.END, "Disconnected\n")
+    text.config(state = DISABLED)
+    connected = False
+    buttoncontrol() #changes the button list to read only
+    
+
+#toggles a list of buttons that change when the board connects/disconnects
+def buttoncontrol():
+    for i in buttons:
+        if connected == False:
+            i["state"] = DISABLED
+        else:
+            i["state"] = NORMAL
+
+
+#runs disconnect() before the window closes to cleanly disconnect the board
+def exit():
+    if connected == True:
+        disconnect()
+        window.destroy()
+    else:
+        window.destroy()
+
+
+#runs a seperate thread to prevent the window mainloop from freezing while the board connects
+def controlthread():
+    def internal():
+        connect()
+    thread = threading.Thread(target=internal)
+    thread.start()
+
+def autothread():
+    print("thread")
+    def internal():
+        follow()
+    thread1 = threading.Thread(target = internal)
+    thread1.start()
+
+
+#runs a seperate thread to update pin status
+def iterate():
+    iterator = Iterator(board)
+    iterator.start()
+
+
+#measures the time taken for the soundwave to bounce back to the sensor to measure the distance of an object in front of it
+#time taken is then converted to distance using the speed of sound as a constant
+#    def sonar():
+#        global echo, trig
+#        timeout = 0
+#        latency = ping()
+#        echo.write(1)
+#        echo.mode = pyfirmata.INPUT
+#        trig.write(1)
+#        time.sleep(0.00001)
+#        trig.write(0)
+#        start_time = time.time()
+#        while echo.read() == 1:
+#            pass
+#        end_time = (time.time())
+#        ping_time = end_time - start_time
+#        distance = (ping_time - latency) 
+#        print(ping_time)
+#        print(latency)
+
+
+#measures the latency of the bluetooth connection to ensure accurate readings from the sonar sensor
+#    def ping():
+#        global pingout, pingin
+#        ping_time = 0
+#        pingout.write(1)
+#        time.sleep(0.01)
+#        pingout.write(0)
+#        start_time = time.time()
+#        while not pingin.read():
+#            pass
+#        end_time = time.time()
+#        ping_time = end_time - start_time
+#        return ping_time
+
+def follow():
+    global guidance, irsr, irsl, irfr
+    while guidance == True:
+        irsrstate = irsr.read()
+        irslstate = irsl.read()
+        irfrstate =irfr.read()
+
+        if irslstate == 1 and irsrstate == 0:
+            control.halt()
+            m1p1.write(1)
+            m2p2.write(1)
+
+        if irslstate == 0 and irsr == 1:
+            control.halt()
+            m2p1.write(1)
+            m1p2.write(1)
+    
+        if irslstate == 1 and irsrstate == 1:
+            control.halt()
+        
+        if irslstate == 0 and irsrstate == 0:
+            control.halt()
+            m1p1.write(1)
+            m2p1.write(1)
+
+        if irfrstate == 0:
+            control.halt()
+
+
+def auto(): #turns on the automatic guidance
+        global guidance, autovar
+        if autovar.get() == 1:
+            guidance = True
+            autothread()
+        else:
+            guidance = False
+
+
+#defines a class for the control functions
+class control:
+    def halt(): #stops the robot
+        m1p1.write(0)
+        m1p2.write(0)
+        m2p1.write(0)
+        m2p2.write(0)
+        
+    def fwd(): #drives the robot forward
+            control.halt()
+            m1p1.write(1)
+            m2p1.write(1)
+            window.after(150)
+            control.halt()
+
+    def bck(): #reverses the robot
+        control.halt()
+        m1p2.write(1)
+        m2p2.write(1)
+        window.after(150)
+        control.halt()
+
+    def left(): #incrementally turns left 
+        control.halt()
+        m1p1.write(1)
+        m2p2.write(1)
+        window.after(150)
+        control.halt()
+
+    def right(): #incrementally turns right
+        control.halt()
+        m2p1.write(1)
+        m1p2.write(1)
+        window.after(150)
+        control.halt()
+
+
+
+    
+
+#creates a window named Controller
+window = tk.Tk()
+window.title("Controller")
+window.geometry("280x400")
+window.protocol('WM_DELETE_WINDOW', exit) #prevents the window from closing when X is pressed, rather runs exit()
+
+#creates buttons in the window
+button1 = tk.Button(window, text = "Forward", font = ("Arial", 11), height = 1, width = 8, command = lambda:control.fwd())
+button2 = tk.Button(window, text = "Stop", font = ("Arial", 11), height = 1, width = 8, command = lambda:control.halt())
+button3 = tk.Button(window, text = "Left", font = ("Arial", 11), height = 1, width = 8, command = lambda:control.left())
+button4 = tk.Button(window, text = "Right", font = ("Arial", 11), height = 1, width = 8, command = lambda:control.right())
+button5 = tk.Button(window, text = "Reverse", font = ("Arial", 11), height = 1, width = 8, command = lambda:control.bck())
+#button6 = tk.Button(window, text = "Distance", font = ("Arial", 11), height = 1, width = 8, command = lambda:sonar())
+
+#places buttons
+button1.place(x = 50, y = 50)
+button2.place(x = 150, y = 150)
+button3.place(x = 50, y = 100)
+button4.place(x = 150, y = 100)
+button5.place(x = 150, y = 50)
+#button6.place(x = 50, y = 150)
+
+#variables required for checkboxes
+autovar = tk.IntVar()
+controlvar = tk.IntVar()
+
+#creates and places checkboxes
+connectcheck = tk.Checkbutton(window, text = "Connect", variable = controlvar, onvalue = 1, offvalue = 0, command = lambda: controlthread())
+connectcheck.place(x = 50, y = 200)
+autocheck = tk.Checkbutton(window, text = "Autonomous mode",variable = autovar, onvalue = 1, offvalue = 0, command = lambda: auto())
+autocheck.place(x = 50, y = 225)
+
+#defines the list of buttons to be toggled when the robot connects/disconnects
+buttons = [button1, button2, button3, button4, button5, autocheck]
+buttoncontrol()
+
+#creates the status box for updates to be printed to
+textlabel = tk.Label(window, text = "Status:")
+text = tk.Text(window, height = 4, width = 22)
+textlabel.place(x = 50, y = 285)
+text.place(x = 50, y = 305)
+text.config(state = DISABLED)
+
+#updates window
+window.mainloop()
